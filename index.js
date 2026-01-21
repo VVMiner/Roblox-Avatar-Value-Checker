@@ -1,179 +1,158 @@
-const express = require('express');
-const { Client, GatewayIntentBits } = require('discord.js');
-const fetch = require('node-fetch');
-const cheerio = require('cheerio');
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+const axios = require('axios');
+require('dotenv').config();
 
-const app = express();
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ]
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
+    ]
 });
 
-const ROLIMONS_URL = "https://www.rolimons.com/itemapi/itemdetails";
-let rolimonsCache = null;
-let lastCache = 0;
+// Command prefix
+const PREFIX = '!';
 
-async function refreshRolimons() {
-  const now = Date.now();
-  if (rolimonsCache && now - lastCache < 300000) return;
+client.once('ready', () => {
+    console.log(`✅ Bot is online as ${client.user.tag}`);
+});
 
-  try {
-    const res = await fetch(ROLIMONS_URL);
-    if (!res.ok) throw new Error(res.status);
-    const data = await res.json();
-    if (data.items) {
-      rolimonsCache = data.items;
-      lastCache = now;
-      console.log(`Rolimons cache updated (${Object.keys(data.items).length} items)`);
+client.on('messageCreate', async (message) => {
+    if (!message.content.startsWith(PREFIX) || message.author.bot) return;
+
+    const args = message.content.slice(PREFIX.length).trim().split(/ +/);
+    const command = args.shift().toLowerCase();
+
+    if (command === 'search') {
+        if (!args.length) {
+            return message.reply('❌ Please provide an item name to search! Example: `!search Dominus`');
+        }
+
+        const searchTerm = args.join(' ');
+        await searchCatalog(message, searchTerm);
     }
-  } catch (e) {
-    console.error("Rolimons failed:", e.message);
-  }
+
+    if (command === 'item') {
+        if (!args.length) {
+            return message.reply('❌ Please provide an item ID! Example: `!item 48474243`');
+        }
+
+        const itemId = args[0];
+        await getItemDetails(message, itemId);
+    }
+
+    if (command === 'help') {
+        const helpEmbed = new EmbedBuilder()
+            .setColor(0x0099FF)
+            .setTitle('📖 Roblox Catalog Bot Commands')
+            .addFields(
+                { name: '!search <item name>', value: 'Search for items in Roblox catalog' },
+                { name: '!item <item ID>', value: 'Get detailed info about a specific item' },
+                { name: '!help', value: 'Show this help message' }
+            )
+            .setTimestamp();
+
+        message.channel.send({ embeds: [helpEmbed] });
+    }
+});
+
+async function searchCatalog(message, query) {
+    try {
+        await message.channel.send(`🔍 Searching for "${query}"...`);
+
+        // Using Roblox's catalog search API
+        const response = await axios.get('https://catalog.roblox.com/v1/search/items', {
+            params: {
+                keyword: query,
+                limit: 10,
+                category: 'All',
+                sortType: 0
+            }
+        });
+
+        const items = response.data.data;
+
+        if (!items || items.length === 0) {
+            return message.channel.send('❌ No items found for that search term.');
+        }
+
+        // Create embed with search results
+        const embed = new EmbedBuilder()
+            .setColor(0x00AE86)
+            .setTitle(`🔍 Search Results: "${query}"`)
+            .setDescription(`Found ${items.length} items`)
+            .setTimestamp();
+
+        // Add up to 10 items to embed
+        items.slice(0, 10).forEach((item, index) => {
+            const price = item.price || 'Not for sale';
+            const limited = item.limited ? '✅' : '❌';
+            
+            embed.addFields({
+                name: `${index + 1}. ${item.name}`,
+                value: `**ID:** ${item.id}\n**Price:** R$${price}\n**Limited:** ${limited}\n**Type:** ${item.itemType || 'Unknown'}`,
+                inline: false
+            });
+        });
+
+        message.channel.send({ embeds: [embed] });
+
+    } catch (error) {
+        console.error('Search error:', error);
+        message.channel.send('❌ Failed to search catalog. Please try again later.');
+    }
 }
 
-async function scrapeRobloxPrice(id) {
-  try {
-    const res = await fetch(`https://www.roblox.com/catalog/${id}`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Referer': 'https://www.roblox.com/'
-      },
-      timeout: 12000
-    });
+async function getItemDetails(message, itemId) {
+    try {
+        await message.channel.send(`📊 Fetching item details for ID: ${itemId}...`);
 
-    if (!res.ok) {
-      console.log(`Roblox page ${res.status} for ID ${id}`);
-      return 0;
+        // Get item details from multiple APIs
+        const [catalogRes, economyRes] = await Promise.all([
+            axios.get(`https://catalog.roblox.com/v1/catalog/items/${itemId}/details`),
+            axios.get(`https://economy.roblox.com/v2/assets/${itemId}/details`)
+        ]);
+
+        const item = catalogRes.data;
+        const economyInfo = economyRes.data;
+
+        // Create detailed embed
+        const embed = new EmbedBuilder()
+            .setColor(0xFF4500)
+            .setTitle(item.name || 'Unknown Item')
+            .setURL(`https://www.roblox.com/catalog/${itemId}/`)
+            .setDescription(item.description || 'No description available')
+            .addFields(
+                { name: '🆔 Item ID', value: itemId, inline: true },
+                { name: '💰 Price', value: `${item.price || 'Not for sale'} Robux`, inline: true },
+                { name: '📦 Type', value: item.itemType || 'Unknown', inline: true },
+                { name: '🎨 Creator', value: item.creatorName || 'Unknown', inline: true },
+                { name: '🏷️ Asset Type', value: economyInfo.AssetType || 'Unknown', inline: true },
+                { name: '🏷️ Genre', value: economyInfo.Genre || 'Not specified', inline: true }
+            )
+            .setTimestamp();
+
+        // Add item image if available
+        if (item.thumbnailUrl) {
+            embed.setThumbnail(item.thumbnailUrl);
+        }
+
+        // Add sales info if available
+        if (economyInfo.Sales) {
+            embed.addFields({ 
+                name: '📈 Total Sales', 
+                value: economyInfo.Sales.toLocaleString(), 
+                inline: true 
+            });
+        }
+
+        message.channel.send({ embeds: [embed] });
+
+    } catch (error) {
+        console.error('Item details error:', error);
+        message.channel.send('❌ Failed to fetch item details. Make sure the item ID is correct.');
     }
-
-    const html = await res.text();
-    const $ = cheerio.load(html);
-
-    // Priority selectors
-    const selectors = [
-      '.text-robux-lg',                     // Your exact class
-      '.text-robux',
-      '.price-container .text-robux',
-      '.PricingContainer .PriceNumber',
-      '[data-price]',
-      '.amount',
-      'span.font-header-1',
-      '.PriceDetails span'
-    ];
-
-    let priceText = '';
-    for (const sel of selectors) {
-      priceText = $(sel).first().text().trim();
-      if (priceText) {
-        console.log(`Matched selector '${sel}' → "${priceText}"`);
-        break;
-      }
-    }
-
-    // Regex fallback (handles dot/comma separators)
-    if (!priceText) {
-      const bodyText = $('body').text();
-      const match = bodyText.match(/(\d{1,3}([.,])\d{3}*)/) ||  // 50.000 or 50,000
-                    bodyText.match(/Buy for\s*(\d{1,3}([.,])\d{3}*)\s*(Robux|R\$)/i) ||
-                    bodyText.match(/R\$\s*(\d{1,3}([.,])\d{3}*)/i);
-      if (match) {
-        priceText = match[1];
-        console.log(`Regex matched: "${priceText}"`);
-      }
-    }
-
-    // Parse and clean (remove dot/comma separators)
-    if (priceText) {
-      const clean = priceText.replace(/[.,]/g, '');
-      const price = Number(clean) or 0;
-      if (price > 0) {
-        console.log(`Parsed price ${price} from "${priceText}" for ${id}`);
-        return price;
-      }
-    }
-
-    // Check for free/offsale/limited
-    const bodyLower = $('body').text().toLowerCase();
-    if (/free|off sale|limited|not for sale/i.test(bodyLower)) {
-      console.log(`Item ${id} detected as free/offsale/limited`);
-      return 0;
-    }
-
-    // Debug snippet if failed
-    const snippet = $('body').text().substring(0, 500).replace(/\s+/g, ' ');
-    console.log(`No price for ${id}. Snippet: "${snippet}"...`);
-
-    return 0;
-  } catch (e) {
-    console.error(`Scrape error for ${id}: ${e.message}`);
-    return 0;
-  }
 }
 
-// Web endpoint
-app.get('/get-price/:id', async (req, res) => {
-  const id = req.params.id.trim();
-  if (!/^\d+$/.test(id)) return res.status(400).json({ success: false, error: 'Invalid ID' });
-
-  await refreshRolimons();
-
-  let price = 0;
-  let source = 'none';
-
-  // Rolimons RAP for limiteds
-  const rolimonsItem = rolimonsCache?.[id];
-  if (rolimonsItem && Array.isArray(rolimonsItem) && rolimonsItem.length >= 4) {
-    price = Number(rolimonsItem[3]) || 0;
-    source = 'rolimons_rap';
-  } else {
-    price = await scrapeRobloxPrice(id);
-    source = price > 0 ? 'roblox_scraped' : 'none';
-  }
-
-  res.json({
-    success: true,
-    id: Number(id),
-    price,
-    source
-  });
-});
-
-// Health
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
-
-// Discord command
-client.on('messageCreate', async msg => {
-  if (msg.author.bot || !msg.content.startsWith('!item')) return;
-  const id = msg.content.split(' ')[1];
-  if (!id) return msg.reply('Usage: !item <id>');
-
-  await refreshRolimons();
-  let price = 0;
-  let source = '';
-
-  const item = rolimonsCache?.[id];
-  if (item && item[3]) {
-    price = Number(item[3]);
-    source = 'Rolimons RAP';
-  } else {
-    price = await scrapeRobloxPrice(id);
-    source = price > 0 ? 'Roblox scraped' : 'Free / Off-sale / Not tracked';
-  }
-
-  msg.reply(`**ID ${id}**\nPrice: **${price.toLocaleString()} R$** (${source})`);
-});
-
-// Start
-(async () => {
-  await refreshRolimons();
-  client.login(process.env.DISCORD_TOKEN)
-    .then(() => console.log(`Bot logged in as ${client.user.tag}`))
-    .catch(err => console.error('Discord login failed:', err));
-
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => console.log(`API listening on port ${PORT}`));
-})();
+// Login to Discord
+client.login(process.env.DISCORD_TOKEN);
