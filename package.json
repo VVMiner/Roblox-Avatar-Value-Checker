@@ -1,20 +1,5 @@
 {
-  "name": "roblox-worth-bot",
-  "version": "1.0.0",
-  "description": "Discord bot + API for Roblox item values via Rolimons",
-  "main": "index.js",
   "scripts": {
     "start": "node index.js"
-  },
-  "dependencies": {
-    "discord.js": "^14.15.3",
-    "express": "^4.21.0",
-    "node-fetch": "^2.7.0",
-    "cheerio": "^1.0.0-rc.12"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "author": "VVMiner",
-  "license": "MIT"
+  }
 }
