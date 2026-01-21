@@ -1,5 +1,9 @@
 {
+  "name": "roblox-worth-bot",
+  "version": "1.0.0",
+  "description": "Discord bot + API for Roblox item values via Rolimons",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
-  }
+  },
 }
