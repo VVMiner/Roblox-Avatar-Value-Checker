@@ -14,109 +14,82 @@ const client = new Client({
 
 const ROLIMONS_URL = "https://www.rolimons.com/itemapi/itemdetails";
 let rolimonsCache = null;
-let lastCache = 0;
 
-async function refreshRolimons() {
-  const now = Date.now();
-  if (rolimonsCache && now - lastCache < 300000) return;
+async function refreshRolimons(force = false) {
+  if (!force && rolimonsCache) return;
 
   try {
-    const res = await fetch(ROLIMONS_URL);
-    if (!res.ok) throw new Error(`Rolimons status ${res.status}`);
+    console.log("Fetching Rolimons...");
+    const res = await fetch(ROLIMONS_URL, { timeout: 15000 });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data && data.items) {
       rolimonsCache = data.items;
-      lastCache = now;
-      console.log(`Rolimons cache updated (${Object.keys(data.items).length} items)`);
+      console.log(`Rolimons loaded: ${Object.keys(data.items).length} items`);
+    } else {
+      console.log("Rolimons data invalid");
     }
   } catch (e) {
-    console.error("Rolimons refresh failed:", e.message);
+    console.error("Rolimons fetch failed:", e.message);
+    rolimonsCache = null;
   }
 }
 
 async function scrapeRobloxPrice(id) {
+  console.log(`Scraping catalog for ID ${id}`);
   try {
     const res = await fetch(`https://www.roblox.com/catalog/${id}`, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Referer': 'https://www.roblox.com/'
+        'Referer': 'https://www.roblox.com/',
+        'Accept': 'text/html'
       },
-      timeout: 12000
+      timeout: 15000
     });
 
     if (!res.ok) {
-      console.log(`Roblox page ${res.status} for ID ${id}`);
+      console.log(`Roblox catalog ${res.status} for ${id}`);
       return 0;
     }
 
     const html = await res.text();
     const $ = cheerio.load(html);
 
-    // Priority selectors - top one is your exact class
-    const selectors = [
-      'span.text-robux-lg',                 // Your exact match
-      '.text-robux-lg',
-      '.text-robux',
-      '.price-container .text-robux',
-      '.PricingContainer .PriceNumber',
-      '[data-price]',
-      '.amount',
-      'span.font-header-1',
-      '.PriceDetails span'
-    ];
-
-    let priceText = '';
-    for (const sel of selectors) {
-      const el = $(sel).first();
-      priceText = el.text().trim();
-      if (priceText) {
-        console.log(`Matched selector '${sel}' → "${priceText}" (element classes: ${el.attr('class') || 'none'})`);
-        break;
-      }
+    // Your exact class first
+    let priceText = $('span.text-robux-lg').first().text().trim();
+    if (priceText) {
+      console.log(`Found .text-robux-lg: "${priceText}"`);
     }
 
-    // Regex fallback - handles dots or commas
+    // More fallbacks
+    if (!priceText) priceText = $('.text-robux, .price-container span, .PricingContainer span, [data-price]').first().text().trim();
+
+    // Regex on body (handles dot/comma)
     if (!priceText) {
-      const bodyText = $('body').text();
-      const match = bodyText.match(/(\d{1,3}([.,])\d{3})\b/) ||  // 50.000 or 50,000
-                    bodyText.match(/Buy for\s*(\d{1,3}([.,])\d{3})\s*(Robux|R\$)/i) ||
-                    bodyText.match(/(\d{1,3}([.,])\d{3})/);
-      if (match) {
-        priceText = match[1];
-        console.log(`Regex fallback matched: "${priceText}"`);
-      }
+      const body = $('body').text();
+      const match = body.match(/(\d{1,3}([.,])\d{3})/) || body.match(/Buy for.*?(\d{1,3}([.,])\d{3})/i);
+      if (match) priceText = match[1];
     }
 
-    // Parse (handle both , and . as thousand separator)
     if (priceText) {
       const clean = priceText.replace(/[.,]/g, '').match(/\d+/);
       const price = clean ? Number(clean[0]) : 0;
       if (price > 0) {
-        console.log(`Parsed price for ${id}: ${price} from "${priceText}"`);
+        console.log(`Parsed price ${price} from "${priceText}"`);
         return price;
       }
     }
 
-    // Free/offsale check
-    const bodyLower = $('body').text().toLowerCase();
-    if (/free|off sale|limited|not for sale|sold out/i.test(bodyLower)) {
-      console.log(`Item ${id} detected as free/offsale`);
-      return 0;
-    }
-
-    // Debug snippet if failed
-    const snippet = $('body').html().substring(0, 600).replace(/\s+/g, ' ');
-    console.log(`No price for ${id}. Snippet (look for robux): "${snippet}"...`);
-
+    console.log(`No price detected for ${id}`);
     return 0;
   } catch (e) {
-    console.error(`Scrape error for ${id}: ${e.message}`);
+    console.error(`Scrape fail for ${id}: ${e.message}`);
     return 0;
   }
 }
 
-// Web API endpoint
+// API endpoint
 app.get('/get-price/:id', async (req, res) => {
   const id = req.params.id.trim();
   if (!/^\d+$/.test(id)) return res.status(400).json({ success: false, error: 'Invalid ID' });
@@ -126,24 +99,25 @@ app.get('/get-price/:id', async (req, res) => {
   let price = 0;
   let source = 'none';
 
-  const rolimonsItem = rolimonsCache?.[id];
-  if (rolimonsItem && Array.isArray(rolimonsItem) && rolimonsItem.length >= 4) {
-    price = Number(rolimonsItem[3]) || 0;
-    source = 'rolimons_rap';
-  } else {
+  // Rolimons first (limiteds)
+  if (rolimonsCache) {
+    const item = rolimonsCache[id];
+    if (item && Array.isArray(item) && item[3]) {
+      price = Number(item[3]) || 0;
+      source = 'rolimons_rap';
+    }
+  }
+
+  // Scrape fallback (non-limited)
+  if (price === 0) {
     price = await scrapeRobloxPrice(id);
     source = price > 0 ? 'roblox_scraped' : 'none';
   }
 
-  res.json({
-    success: true,
-    id: Number(id),
-    price,
-    source
-  });
+  res.json({ success: true, id: Number(id), price, source });
 });
 
-// Health check
+// Health
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 // Discord command
@@ -154,15 +128,19 @@ client.on('messageCreate', async msg => {
 
   await refreshRolimons();
   let price = 0;
-  let source = '';
+  let source = 'none';
 
-  const item = rolimonsCache?.[id];
-  if (item && item[3]) {
-    price = Number(item[3]);
-    source = 'Rolimons RAP';
-  } else {
+  if (rolimonsCache) {
+    const item = rolimonsCache[id];
+    if (item && item[3]) {
+      price = Number(item[3]);
+      source = 'Rolimons RAP';
+    }
+  }
+
+  if (price === 0) {
     price = await scrapeRobloxPrice(id);
-    source = price > 0 ? 'Roblox scraped' : 'Free / Off-sale / Not tracked';
+    source = price > 0 ? 'Roblox scraped' : 'Not found';
   }
 
   msg.reply(`**ID ${id}**\nPrice: **${price.toLocaleString()} R$** (${source})`);
@@ -170,11 +148,7 @@ client.on('messageCreate', async msg => {
 
 // Start
 (async () => {
-  await refreshRolimons();
-  client.login(process.env.DISCORD_TOKEN)
-    .then(() => console.log(`Bot logged in as ${client.user.tag}`))
-    .catch(err => console.error('Discord login failed:', err));
-
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => console.log(`API listening on port ${PORT}`));
+  await refreshRolimons(true); // force initial load
+  client.login(process.env.DISCORD_TOKEN).catch(e => console.error('Login fail:', e));
+  app.listen(process.env.PORT || 3000, () => console.log('Ready'));
 })();
