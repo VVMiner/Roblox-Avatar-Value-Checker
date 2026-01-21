@@ -9,6 +9,7 @@
     "discord.js": "^14.15.3",
     "express": "^4.21.0",
     "node-fetch": "^2.7.0"
+    "cheerio": "^1.0.0-rc.12"
   },
   "engines": {
     "node": ">=18"
