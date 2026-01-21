@@ -1,6 +1,7 @@
 const express = require('express');
 const { Client, GatewayIntentBits } = require('discord.js');
 const fetch = require('node-fetch');
+const cheerio = require('cheerio');
 
 const app = express();
 const client = new Client({
@@ -14,30 +15,6 @@ const client = new Client({
 const ROLIMONS_URL = "https://www.rolimons.com/itemapi/itemdetails";
 let rolimonsCache = null;
 let lastCache = 0;
-
-// Roblox official price fallback
-async function getRobloxPrice(id) {
-  try {
-    const res = await fetch(`https://economy.roblox.com/v1/assets/${id}/resellers`); // sometimes works
-    if (res.ok) {
-      const data = await res.json();
-      if (data.data && data.data.length > 0) {
-        return data.data[0].price; // lowest resale price
-      }
-    }
-  } catch {}
-
-  // Main fallback: GetProductInfo via Roblox API proxy (works 99% of time for on-sale items)
-  try {
-    const res = await fetch(`https://api.roblox.com/marketplace/productinfo?assetId=${id}`);
-    if (res.ok) {
-      const data = await res.json();
-      return data.PriceInRobux || 0;
-    }
-  } catch {}
-
-  return 0;
-}
 
 async function refreshRolimons() {
   const now = Date.now();
@@ -57,7 +34,54 @@ async function refreshRolimons() {
   }
 }
 
-// Web endpoint (Roblox script uses this)
+// Scrape Roblox catalog for price (fallback)
+async function scrapeRobloxPrice(id) {
+  try {
+    const res = await fetch(`https://www.roblox.com/catalog/${id}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9'
+      }
+    });
+    if (!res.ok) throw new Error(`Roblox page ${res.status}`);
+    const html = await res.text();
+    const $ = cheerio.load(html);
+
+    // Try multiple selectors
+    let priceText = $('.price-container .text-robux').first().text().trim() ||
+                    $('.PricingContainer .PriceNumber').first().text().trim() ||
+                    $('div[data-price]').attr('data-price') ||
+                    $('span:contains("Robux")').first().text().trim() ||
+                    $('div:contains("Buy for")').text().trim();
+
+    if (!priceText) {
+      // Regex fallback on body text
+      const bodyText = $('body').text();
+      const match = bodyText.match(/Buy for\s*(\d{1,3}(?:,\d{3})*)\s*(Robux|R\$)/i) ||
+                     bodyText.match(/R\$\s*(\d{1,3}(?:,\d{3})*)/i) ||
+                     bodyText.match(/(\d{1,3}(?:,\d{3})*)\s*Robux/i);
+      priceText = match ? match[1] : '';
+    }
+
+    if (priceText) {
+      const clean = priceText.replace(/,/g, '').match(/\d+/);
+      const price = clean ? Number(clean[0]) : 0;
+      if (price > 0) return price;
+    }
+
+    // Check for free/offsale keywords
+    if (/free|off sale|limited|not for sale/i.test($('body').text())) {
+      return 0;
+    }
+
+    return 0;
+  } catch (e) {
+    console.error(`Scrape failed for ${id}:`, e.message);
+    return 0;
+  }
+}
+
+// Web endpoint
 app.get('/get-price/:id', async (req, res) => {
   const id = req.params.id.trim();
   if (!/^\d+$/.test(id)) return res.status(400).json({ success: false, error: 'Invalid ID' });
@@ -67,15 +91,13 @@ app.get('/get-price/:id', async (req, res) => {
   let price = 0;
   let source = 'none';
 
-  // 1. Rolimons RAP (limiteds)
   const rolimonsItem = rolimonsCache?.[id];
   if (rolimonsItem && Array.isArray(rolimonsItem) && rolimonsItem.length >= 4) {
     price = Number(rolimonsItem[3]) || 0;
     source = 'rolimons_rap';
   } else {
-    // 2. Roblox official price (normal on-sale UGC)
-    price = await getRobloxPrice(id);
-    if (price > 0) source = 'roblox_official';
+    price = await scrapeRobloxPrice(id);
+    source = price > 0 ? 'roblox_scraped' : 'none';
   }
 
   res.json({
@@ -86,7 +108,9 @@ app.get('/get-price/:id', async (req, res) => {
   });
 });
 
-// Discord command (optional)
+// Health + Discord commands (keep as before)
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
 client.on('messageCreate', async msg => {
   if (msg.author.bot || !msg.content.startsWith('!item')) return;
   const id = msg.content.split(' ')[1];
@@ -101,8 +125,8 @@ client.on('messageCreate', async msg => {
     price = Number(item[3]);
     source = 'Rolimons RAP';
   } else {
-    price = await getRobloxPrice(id);
-    source = price > 0 ? 'Roblox catalog price' : 'Free / Off-sale / Not tracked';
+    price = await scrapeRobloxPrice(id);
+    source = price > 0 ? 'Roblox catalog scraped' : 'Free / Off-sale / Not tracked';
   }
 
   msg.reply(`**ID ${id}**\nPrice: **${price.toLocaleString()} R$** (${source})`);
@@ -112,5 +136,5 @@ client.on('messageCreate', async msg => {
 (async () => {
   await refreshRolimons();
   client.login(process.env.DISCORD_TOKEN);
-  app.listen(process.env.PORT || 3000, () => console.log('API ready'));
+  app.listen(process.env.PORT || 3000, () => console.log('Bot + API ready'));
 })();
