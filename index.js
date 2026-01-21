@@ -18,7 +18,7 @@ let lastCache = 0;
 
 async function refreshRolimons() {
   const now = Date.now();
-  if (rolimonsCache && now - lastCache < 300000) return; // 5 min cache
+  if (rolimonsCache && now - lastCache < 300000) return;
 
   try {
     const res = await fetch(ROLIMONS_URL);
@@ -53,11 +53,12 @@ async function scrapeRobloxPrice(id) {
     const html = await res.text();
     const $ = cheerio.load(html);
 
-    // Priority selectors (added .text-robux-lg from your HTML snippet)
+    // Priority selectors - top one is your exact class
     const selectors = [
-      '.text-robux-lg',                     // Your exact class
-      '.text-robux',                        // Common variant
-      '.price-container .text-robux',       // Container
+      'span.text-robux-lg',                 // Your exact match
+      '.text-robux-lg',
+      '.text-robux',
+      '.price-container .text-robux',
       '.PricingContainer .PriceNumber',
       '[data-price]',
       '.amount',
@@ -67,42 +68,46 @@ async function scrapeRobloxPrice(id) {
 
     let priceText = '';
     for (const sel of selectors) {
-      priceText = $(sel).first().text().trim();
+      const el = $(sel).first();
+      priceText = el.text().trim();
       if (priceText) {
-        console.log(`Price matched selector '${sel}' → "${priceText}"`);
+        console.log(`Matched selector '${sel}' → "${priceText}" (element classes: ${el.attr('class') || 'none'})`);
         break;
       }
     }
 
-    // Regex fallback on body if no selector match
+    // Regex fallback - handles dots or commas
     if (!priceText) {
       const bodyText = $('body').text();
-      const match = bodyText.match(/(\d{1,3}(?:,\d{3})*)/) ||  // any comma-separated number
-                    bodyText.match(/Buy for\s*(\d{1,3}(?:,\d{3})*)\s*(?:Robux|R\$)/i) ||
-                    bodyText.match(/R\$\s*(\d{1,3}(?:,\d{3})*)/i);
+      const match = bodyText.match(/(\d{1,3}([.,])\d{3})\b/) ||  // 50.000 or 50,000
+                    bodyText.match(/Buy for\s*(\d{1,3}([.,])\d{3})\s*(Robux|R\$)/i) ||
+                    bodyText.match(/(\d{1,3}([.,])\d{3})/);
       if (match) {
         priceText = match[1];
         console.log(`Regex fallback matched: "${priceText}"`);
       }
     }
 
-    // Parse and clean
+    // Parse (handle both , and . as thousand separator)
     if (priceText) {
-      const clean = priceText.replace(/,/g, '').match(/\d+/);
+      const clean = priceText.replace(/[.,]/g, '').match(/\d+/);
       const price = clean ? Number(clean[0]) : 0;
-      if (price > 0) return price;
+      if (price > 0) {
+        console.log(`Parsed price for ${id}: ${price} from "${priceText}"`);
+        return price;
+      }
     }
 
-    // Check for free/offsale keywords
+    // Free/offsale check
     const bodyLower = $('body').text().toLowerCase();
     if (/free|off sale|limited|not for sale|sold out/i.test(bodyLower)) {
       console.log(`Item ${id} detected as free/offsale`);
       return 0;
     }
 
-    // Debug log snippet if still 0
-    const bodySnippet = $('body').text().substring(0, 500).replace(/\s+/g, ' ');
-    console.log(`No price found for ${id}. Snippet: "${bodySnippet}"...`);
+    // Debug snippet if failed
+    const snippet = $('body').html().substring(0, 600).replace(/\s+/g, ' ');
+    console.log(`No price for ${id}. Snippet (look for robux): "${snippet}"...`);
 
     return 0;
   } catch (e) {
@@ -111,7 +116,7 @@ async function scrapeRobloxPrice(id) {
   }
 }
 
-// Web API endpoint for Roblox script
+// Web API endpoint
 app.get('/get-price/:id', async (req, res) => {
   const id = req.params.id.trim();
   if (!/^\d+$/.test(id)) return res.status(400).json({ success: false, error: 'Invalid ID' });
@@ -121,13 +126,11 @@ app.get('/get-price/:id', async (req, res) => {
   let price = 0;
   let source = 'none';
 
-  // 1. Rolimons RAP (limiteds)
   const rolimonsItem = rolimonsCache?.[id];
   if (rolimonsItem && Array.isArray(rolimonsItem) && rolimonsItem.length >= 4) {
     price = Number(rolimonsItem[3]) || 0;
     source = 'rolimons_rap';
   } else {
-    // 2. Scrape Roblox catalog (non-limited on-sale)
     price = await scrapeRobloxPrice(id);
     source = price > 0 ? 'roblox_scraped' : 'none';
   }
@@ -143,7 +146,7 @@ app.get('/get-price/:id', async (req, res) => {
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
-// Discord command (optional)
+// Discord command
 client.on('messageCreate', async msg => {
   if (msg.author.bot || !msg.content.startsWith('!item')) return;
   const id = msg.content.split(' ')[1];
@@ -165,7 +168,7 @@ client.on('messageCreate', async msg => {
   msg.reply(`**ID ${id}**\nPrice: **${price.toLocaleString()} R$** (${source})`);
 });
 
-// Start bot + server
+// Start
 (async () => {
   await refreshRolimons();
   client.login(process.env.DISCORD_TOKEN)
