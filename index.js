@@ -5,51 +5,40 @@ const cheerio = require('cheerio');
 
 const app = express();
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
 const ROLIMONS_URL = "https://www.rolimons.com/itemapi/itemdetails";
 let rolimonsCache = null;
 
-async function refreshRolimons(force = false) {
-  if (!force && rolimonsCache) return;
-
+async function refreshRolimons() {
   try {
-    console.log("Fetching Rolimons...");
     const res = await fetch(ROLIMONS_URL, { timeout: 15000 });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data && data.items) {
       rolimonsCache = data.items;
       console.log(`Rolimons loaded: ${Object.keys(data.items).length} items`);
-    } else {
-      console.log("Rolimons data invalid");
     }
   } catch (e) {
-    console.error("Rolimons fetch failed:", e.message);
-    rolimonsCache = null;
+    console.error("Rolimons fetch error:", e.message);
   }
 }
 
 async function scrapeRobloxPrice(id) {
-  console.log(`Scraping catalog for ID ${id}`);
+  console.log(`Scraping ${id}`);
   try {
     const res = await fetch(`https://www.roblox.com/catalog/${id}`, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Referer': 'https://www.roblox.com/',
-        'Accept': 'text/html'
+        'Referer': 'https://www.roblox.com/'
       },
       timeout: 15000
     });
 
     if (!res.ok) {
-      console.log(`Roblox catalog ${res.status} for ${id}`);
+      console.log(`Page ${res.status} for ${id}`);
       return 0;
     }
 
@@ -58,33 +47,31 @@ async function scrapeRobloxPrice(id) {
 
     // Your exact class first
     let priceText = $('span.text-robux-lg').first().text().trim();
-    if (priceText) {
-      console.log(`Found .text-robux-lg: "${priceText}"`);
-    }
+    if (priceText) console.log(`Matched .text-robux-lg: "${priceText}"`);
 
-    // More fallbacks
-    if (!priceText) priceText = $('.text-robux, .price-container span, .PricingContainer span, [data-price]').first().text().trim();
+    if (!priceText) priceText = $('.text-robux-lg, .text-robux, .price-container span, [data-price]').first().text().trim();
 
-    // Regex on body (handles dot/comma)
+    // Regex for dot/comma numbers (50.000 or 50,000)
     if (!priceText) {
       const body = $('body').text();
-      const match = body.match(/(\d{1,3}([.,])\d{3})/) || body.match(/Buy for.*?(\d{1,3}([.,])\d{3})/i);
+      const match = body.match(/(\d{1,3}([.,])\d{3})\b/) || body.match(/(\d{1,3}([.,])\d{3})/);
       if (match) priceText = match[1];
     }
 
     if (priceText) {
+      // Handle both dot and comma as thousand separator
       const clean = priceText.replace(/[.,]/g, '').match(/\d+/);
       const price = clean ? Number(clean[0]) : 0;
       if (price > 0) {
-        console.log(`Parsed price ${price} from "${priceText}"`);
+        console.log(`Parsed ${price} from "${priceText}" for ${id}`);
         return price;
       }
     }
 
-    console.log(`No price detected for ${id}`);
+    console.log(`No price for ${id}`);
     return 0;
   } catch (e) {
-    console.error(`Scrape fail for ${id}: ${e.message}`);
+    console.error(`Scrape fail ${id}: ${e.message}`);
     return 0;
   }
 }
@@ -94,21 +81,19 @@ app.get('/get-price/:id', async (req, res) => {
   const id = req.params.id.trim();
   if (!/^\d+$/.test(id)) return res.status(400).json({ success: false, error: 'Invalid ID' });
 
-  await refreshRolimons();
-
   let price = 0;
   let source = 'none';
 
-  // Rolimons first (limiteds)
+  // Rolimons for limiteds
   if (rolimonsCache) {
     const item = rolimonsCache[id];
-    if (item && Array.isArray(item) && item[3]) {
-      price = Number(item[3]) || 0;
+    if (item && Array.isArray(item) && item.length >= 4 && item[3] > 0) {
+      price = Number(item[3]);
       source = 'rolimons_rap';
     }
   }
 
-  // Scrape fallback (non-limited)
+  // Scrape fallback
   if (price === 0) {
     price = await scrapeRobloxPrice(id);
     source = price > 0 ? 'roblox_scraped' : 'none';
@@ -126,13 +111,12 @@ client.on('messageCreate', async msg => {
   const id = msg.content.split(' ')[1];
   if (!id) return msg.reply('Usage: !item <id>');
 
-  await refreshRolimons();
   let price = 0;
   let source = 'none';
 
   if (rolimonsCache) {
     const item = rolimonsCache[id];
-    if (item && item[3]) {
+    if (item && item[3] > 0) {
       price = Number(item[3]);
       source = 'Rolimons RAP';
     }
@@ -148,7 +132,7 @@ client.on('messageCreate', async msg => {
 
 // Start
 (async () => {
-  await refreshRolimons(true); // force initial load
+  await refreshRolimons();
   client.login(process.env.DISCORD_TOKEN).catch(e => console.error('Login fail:', e));
   app.listen(process.env.PORT || 3000, () => console.log('Ready'));
 })();
