@@ -25,39 +25,34 @@ app.get('/getValues', async (req, res) => {
       const { data } = await axios.get(url, { headers });
       const $ = cheerio.load(data);
 
+      let name = '';
       let rap = 0;
       let value = 0;
 
-      // Broad search: find elements with text like "RAP" or "Value", then look for nearby numbers
-      $('p, span, div').each((i, el) => {
-        const text = $(el).text().trim().toLowerCase();
-        const nextText = $(el).next().text().trim().replace(/[^0-9,]/g, '').replace(/,/g, '');
+      // Parse name (from <h1> or title)
+      name = $('h1').text().trim() || $('title').text().trim().split(' - ')[0] || 'Unknown Item';
 
-        if (text.includes('rap') && !text.includes('after sale') && nextText) {
+      // Parse stats (RAP, Value)
+      $('span').each((i, el) => {
+        const text = $(el).text().trim().toLowerCase();
+        const nextText = $(el).next('span').text().trim().replace(/[^0-9,]/g, '').replace(/,/g, '');
+
+        if (text === 'rap' && nextText) {
           rap = parseInt(nextText, 10) || 0;
         }
-        if (text.includes('value') && !text.includes('demand') && nextText) {
+        if (text === 'value' && nextText) {
           value = parseInt(nextText, 10) || 0;
         }
       });
 
-      // Fallback: scan all text for patterns near "RAP" or "Value"
-      if (rap === 0 || value === 0) {
-        const bodyText = $('body').text();
-        const rapMatch = bodyText.match(/RAP\s*[\s:]*([\d,]+)/i);
-        if (rapMatch) rap = parseInt(rapMatch[1].replace(/,/g, ''), 10) || 0;
-
-        const valueMatch = bodyText.match(/Value\s*[\s:]*([\d,]+)/i);
-        if (valueMatch) value = parseInt(valueMatch[1].replace(/,/g, ''), 10) || 0;
-      }
-
       results[id] = {
+        name,
         rap,
         value: value > 0 ? value : rap,
         debugNote: rap > 0 || value > 0 ? 'Parsed successfully' : 'No match found - check HTML'
       };
     } catch (error) {
-      results[id] = { rap: 0, value: 0, error: error.message };
+      results[id] = { name: 'Unknown', rap: 0, value: 0, error: error.message };
     }
   }
 
