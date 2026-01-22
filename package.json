@@ -1,9 +1,13 @@
 {
-  "name": "roblox-worth-bot",
+  "name": "rolimons-collector",
   "version": "1.0.0",
-  "description": "Discord bot + API for Roblox item values via Rolimons",
   "main": "index.js",
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.5",
+    "cheerio": "^1.0.0-rc.12"
+  },
   "scripts": {
     "start": "node index.js"
-  },
+  }
 }
