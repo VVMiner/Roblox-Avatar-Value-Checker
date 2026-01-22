@@ -29,21 +29,30 @@ app.get('/getValues', async (req, res) => {
       let rap = 0;
       let value = 0;
 
-      // Parse name (from <h1> or title)
-      name = $('h1').text().trim() || $('title').text().trim().split(' - ')[0] || 'Unknown Item';
+      // Parse name from <h1> or title fallback
+      name = $('h1').first().text().trim() || $('title').text().trim().split(' - ')[0] || 'Unknown Item';
 
-      // Parse stats (RAP, Value)
-      $('span').each((i, el) => {
-        const text = $(el).text().trim().toLowerCase();
-        const nextText = $(el).next('span').text().trim().replace(/[^0-9,]/g, '').replace(/,/g, '');
-
-        if (text === 'rap' && nextText) {
-          rap = parseInt(nextText, 10) || 0;
+      // Parse stats using class-based selectors (updated for Rolimons structure)
+      $('.stat-label').each((i, el) => {
+        const label = $(el).text().trim().toLowerCase();
+        const valueStr = $(el).next('.stat-value').text().trim().replace(/,/g, '');
+        if (label.includes('rap')) {
+          rap = parseInt(valueStr, 10) || 0;
         }
-        if (text === 'value' && nextText) {
-          value = parseInt(nextText, 10) || 0;
+        if (label.includes('value')) {
+          value = parseInt(valueStr, 10) || 0;
         }
       });
+
+      // Fallback broad search if class selectors miss
+      if (rap === 0 || value === 0) {
+        $('span, p, div').each((i, el) => {
+          const text = $(el).text().trim().toLowerCase();
+          const nextText = $(el).next().text().trim().replace(/,/g, '');
+          if (text === 'rap' && nextText) rap = parseInt(nextText, 10) || 0;
+          if (text === 'value' && nextText) value = parseInt(nextText, 10) || 0;
+        });
+      }
 
       results[id] = {
         name,
