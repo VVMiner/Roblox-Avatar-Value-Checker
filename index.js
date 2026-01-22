@@ -5,9 +5,10 @@ const cheerio = require('cheerio');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Add headers to mimic browser (helps avoid blocks)
 const headers = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.5'
 };
 
 app.get('/getValues', async (req, res) => {
@@ -17,7 +18,7 @@ app.get('/getValues', async (req, res) => {
   }
 
   const results = {};
-  
+
   for (const id of ids) {
     try {
       const url = `https://www.rolimons.com/item/${id}`;
@@ -27,38 +28,33 @@ app.get('/getValues', async (req, res) => {
       let rap = 0;
       let value = 0;
 
-      // Search for elements containing "RAP" or "Value" and grab nearby numbers
-      $('body *').each((i, el) => {
+      // Broad search: find elements with text like "RAP" or "Value", then look for nearby numbers
+      $('p, span, div').each((i, el) => {
         const text = $(el).text().trim().toLowerCase();
-        if (text.includes('rap') && !text.includes('after sale')) {  // Avoid "RAP After Sale"
-          // Look for sibling or child number (often in .stat or just text)
-          const numMatch = $(el).nextAll().addBack().text().match(/[\d,]+/);
-          if (numMatch) rap = parseInt(numMatch[0].replace(/,/g, ''), 10) || 0;
+        const nextText = $(el).next().text().trim().replace(/[^0-9,]/g, '').replace(/,/g, '');
+
+        if (text.includes('rap') && !text.includes('after sale') && nextText) {
+          rap = parseInt(nextText, 10) || 0;
         }
-        if (text.includes('value') && !text.includes('demand')) {
-          const numMatch = $(el).nextAll().addBack().text().match(/[\d,]+/);
-          if (numMatch) value = parseInt(numMatch[0].replace(/,/g, ''), 10) || 0;
+        if (text.includes('value') && !text.includes('demand') && nextText) {
+          value = parseInt(nextText, 10) || 0;
         }
       });
 
-      // Alternative: target common stat containers
-      if (rap === 0) {
-        $('.stat:contains("RAP")').each((i, el) => {
-          const num = $(el).text().trim().replace(/[^0-9]/g, '');
-          if (num) rap = parseInt(num, 10);
-        });
-      }
-      if (value === 0) {
-        $('.stat:contains("Value")').each((i, el) => {
-          const num = $(el).text().trim().replace(/[^0-9]/g, '');
-          if (num) value = parseInt(num, 10);
-        });
+      // Fallback: scan all text for patterns near "RAP" or "Value"
+      if (rap === 0 || value === 0) {
+        const bodyText = $('body').text();
+        const rapMatch = bodyText.match(/RAP\s*[\s:]*([\d,]+)/i);
+        if (rapMatch) rap = parseInt(rapMatch[1].replace(/,/g, ''), 10) || 0;
+
+        const valueMatch = bodyText.match(/Value\s*[\s:]*([\d,]+)/i);
+        if (valueMatch) value = parseInt(valueMatch[1].replace(/,/g, ''), 10) || 0;
       }
 
       results[id] = {
         rap,
-        value: value > 0 ? value : rap,  // Fallback to RAP if value missing
-        rawTextSample: $('body').text().substring(0, 200)  // Debug snippet (remove later)
+        value: value > 0 ? value : rap,
+        debugNote: rap > 0 || value > 0 ? 'Parsed successfully' : 'No match found - check HTML'
       };
     } catch (error) {
       results[id] = { rap: 0, value: 0, error: error.message };
@@ -69,5 +65,5 @@ app.get('/getValues', async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`Rolimons collector on port ${port}`);
+  console.log(`Rolimons proxy running on port ${port}`);
 });
